@@ -1,0 +1,49 @@
+#! /bin/bash
+
+exec &> >(tee -i ~/clone-disks.log)
+
+#VGNAME for ubuntu is vgubuntu
+VGNAME="vgubuntu"
+disk=$1
+if [[ -z $disk ]]; then
+    disk="/dev/nvme0n1p"
+fi
+
+part1="${disk}1"
+part2="${disk}2"
+part3="${disk}3"
+crypt_name="odoo_luks"
+shrink_size="20G"
+
+echo "Opening encrypted partition..."
+cryptsetup open $part3 $crypt_name
+echo "Activating $VGNAME..."
+vgchange -a y $VGNAME
+echo "Resizing root partition to ${shrink_size}..."
+lvresize -L $shrink_size --resizefs $VGNAME/root
+
+if [[ $? = 0 ]]; then
+    echo "Copying first partition to /home/odoo/part1.img..."
+    cp $part1 /home/odoo/part1.img
+    echo "Copying second partition to /home/odoo/part2.pcl..."
+    partclone.ext4 -cs $part2 -O /home/odoo/part2.pcl
+    echo "Copying third partition to /home/odoo/$VGNAME-root.pcl..."
+    partclone.ext4 -cs /dev/mapper/$VGNAME-root -O /home/odoo/$VGNAME-root.pcl
+
+    pushd /home/odoo
+        #echo "Backuping old archives..."
+        #mv part1.img.zst{,.bak}
+        #mv part2.pcl.zst{,.bak}
+        #mv $VGNAME-root.pcl.zst{,.bak}
+        #echo "Archiving new images..."
+        #zstd part1.img part2.pcl $VGNAME-root.pcl
+        chown odoo:odoo part1.img part2.pcl $VGNAME-root.pcl
+    popd
+fi
+
+echo "Resizing root partition back to full size..."
+lvresize -l +100%FREE --resizefs $VGNAME/root
+echo "Deactivating LVM group..."
+vgchange -a n $VGNAME
+echo "Closing encrypted partition..."
+cryptsetup close $crypt_name

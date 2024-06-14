@@ -1,0 +1,60 @@
+#! /bin/bash
+
+#find the free laptop disk
+disk=''
+for d in $(lsblk | grep disk | awk '{print $1}'); do
+    mounted=$(lsblk | grep "$d" | grep part | awk ' /\// {print}')
+    if [[ -z $mounted ]]; then
+        disk="/dev/$d"
+        break
+    fi
+done
+
+[[ -z $disk ]] && echo "No free disk found for install. Exiting..." && exit 0;
+
+echo "Installing on ${disk}..."
+read -p "Press enter to continue"
+disktype=$(echo "$disk" | awk '{print substr($0,1,length($0)-1)}')
+case $disktype in
+    /dev/sd | /dev/hd)
+        part1="${disk}1"
+        part2="${disk}2"
+        part3="${disk}3"
+        part4="${disk}4"
+        ;;
+    *)
+        part1="${disk}p1"
+        part2="${disk}p2"
+        part3="${disk}p3"
+        part4="${disk}p4"
+        ;;
+esac
+
+echo "Overwrite GPT using original device UUIDs..."
+sgdisk -o -U E6C18324-7874-4474-A94C-E1F5C924C138 \
+    -n 1:0:+100M -t 1:EF00 -u 1:D2C64C83-D483-4DBE-9F97-257AA4657DC7 -c "1:EFI system partition" \
+    -n 2:0:+16M  -t 2:0C01 -u 2:36312599-0785-4D99-B212-C9BC87294545 -c "2:Microsoft reserved ..." \
+    -n 4:-508M:0 -t 4:2700 -u 4:CF1E8D98-E625-432D-81C0-6C499D942FD1 \
+    -n 3:0:0     -t 3:0700 -u 3:97EB89E8-ADB7-435C-912B-5A94C77B324B -c "3:Basic data partition" ${disk}
+
+if [[ $1 = "--office" ]]; then
+    echo "Using Office 365 image..."
+    img3="p3-ms365.img"
+else
+    echo "Using clean image..."
+    img3="p3.img"
+fi
+
+echo "Writing P1"
+pv /home/odoo/win/p1.img > ${part1}
+echo "Writing P2"
+pv /home/odoo/win/p2.img > ${part2}
+echo "Writing P3"
+pv /home/odoo/win/${img3} > ${part3}
+echo "Writing P4"
+pv /home/odoo/win/p4.img > ${part4}
+
+echo "Extending NTFS filesystem to partition size..."
+ntfsresize -f ${part3}
+
+reboot

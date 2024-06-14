@@ -1,0 +1,14 @@
+#!/bin/bash
+#
+#automatic update expired apt keys, run only with root
+
+PATH=$PATH:$PWD
+if [[ $EUID -ne 0 ]]
+  then echo "Please run as root"
+  exit
+fi
+keys=$(apt update | grep -E 'EXPKEYSIG|NO_PUBKEY' | awk '{for(i=1; i<=NF; i++) if($i~/EXPKEYSIG|NO_PUBKEY/)print $(i+1)}')
+for key in $keys
+do
+    apt-key adv --recv-keys --keyserver keyserver.ubuntu.com $key
+done

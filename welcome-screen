@@ -1,0 +1,26 @@
+#! /bin/bash
+
+clear
+echo "Welcome to the installation setup"
+read -rsn 1 -p "Press Enter to continue" variable; echo
+
+if [[ $variable != "!" ]]; then
+    /usr/local/sbin/install-laptop
+else
+    echo "1. Linux"
+    echo "2. Windows (clean)"
+    echo "3. Windows (Office365)"
+    read -p "Please choose an OS to install: " number
+
+    case $number in
+        1)
+            /usr/local/sbin/install-laptop
+            ;;
+        2)
+            /usr/local/sbin/install-windows
+            ;;
+        3)
+            /usr/local/sbin/install-windows --office
+            ;;
+    esac
+fi

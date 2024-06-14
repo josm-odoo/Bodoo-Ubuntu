@@ -1,0 +1,410 @@
+#!/bin/bash
+#
+#by moa 2021-06-16
+#Script to install Odoo laptop from an image
+#
+# to backup a partition shrink it before to min size +1G, to be sure
+# open it if crypted : cryptsetup open /dev/mapper/nvmeon1p3 dm_crypt-0
+# resize to minium patition data size (skip empty data)
+# lvresize -L 17G --resizefs $VGNAME/root
+# copie du volume :
+# partclone.ext4 -c -s  /dev/mapper/$VGNAME-root -o /home/odoo/$VGNAME-root.pcl
+# resize patition to full size
+# lvmresize -l+100%FREE --resizefs $VGNAME/root
+#
+
+#max screen backlight
+cat /sys/class/backlight/*/max_brightness >/sys/class/backlight/*/brightness
+setfont  /usr/share/kbd/consolefonts/latarcyrheb-sun32.psfu.gz
+VERSION="202406 Ubuntu 24.04 LTS"
+VGNAME="vgubuntu"
+# Check for installed packages so we don't run into problems later on
+used_binaries=(cryptsetup dmidecode openssl partclone.ext4 pvcreate resize2fs sgdisk)
+for i in "${used_binaries[@]}"
+do
+    if ! hash $i &> /dev/null
+    then
+        echo "$i: command not found" >&2
+        exit 1
+    fi
+done
+
+
+exec &> >(tee -i ~/install-laptop.log)
+
+PROGRAM_NAME=$0
+
+trapped() {
+    echo
+    read -p "What do you want to do? [e]xit, [r]estart, [c]ontinue: " answer
+    case $answer in
+        'e'|'exit')
+            exit
+            ;;
+        'r'|'restart')
+            exec $PROGRAM_NAME
+            ;;
+        'c'|'continue')
+            echo "Continuing..."
+            ;;
+        *)
+            echo "\"$answer\" is not an option."
+            trapped
+            ;;
+    esac
+}
+
+trap 'trapped' INT
+
+#asking password function
+ask() {
+    charcount='0'
+    prompt="${1} "
+    reply=''
+    while IFS='' read -n '1' -p "${prompt}" -r -s 'char'
+    do
+        case "${char}" in
+            # Handles NULL
+            ( $'\000' )
+            break
+            ;;
+            # Handles BACKSPACE and DELETE
+            ( $'\010' | $'\177' )
+            if (( charcount > 0 )); then
+                prompt=$'\b \b'
+                reply="${reply%?}"
+                (( charcount-- ))
+            else
+                prompt=''
+            fi
+            ;;
+            ( * )
+            prompt='*'
+            reply+="${char}"
+            (( charcount++ ))
+            ;;
+        esac
+    done
+    printf '\n' >&2
+    printf '%s\n' "${reply}"
+}
+
+PATH=$PATH:$PWD
+clear
+echo "Welcome to Odoo latop installer $VERSION"
+
+networking=$(cat /sys/class/net/*/operstate | awk '/up/ {print}')
+echo "Networking is : $networking"
+
+# AMD or Intel(R)
+cputype=$(cat /proc/cpuinfo | awk '/model name/ {print $4};' | head -n1)
+odoopass=""
+
+valueok=''
+while [[ -z $valueok ]]
+do
+    echo -n "Enter your type of Keyboard [be], de, es, fr, us, uk, br, it: "; read keyboard
+    [[ -z $keyboard ]] && keyboard=be
+    valueok=$(echo $keyboard | grep -E -i -w 'be|de|es|fr|us|uk|br|it')
+done
+
+# map xkbmap to console layouts
+case $keyboard in
+    'be' )
+        console_layout="$keyboard-latin1"
+        ;;
+    'br' )
+        console_layout="$keyboard-latin1-us"
+        ;;
+    * )
+        console_layout="$keyboard"
+        ;;
+esac
+loadkeys $console_layout
+
+#to see list use commande : ibus list-engine
+declare -A IbusEngine
+IbusEngine['be']='xbe:be::fra'
+IbusEngine['fr']='xbe:fr::fra'
+IbusEngine['es']='xbe:es::spa'
+IbusEngine['de']='xbe:de::ger'
+IbusEngine['us']='xbe:us::eng'
+IbusEngine['uk']='xbe:gb::eng'
+IbusEngine['br']='xbe:br::por'
+IbusEngine['it']='xbe:it::ita'
+IBUSENGINE=${IbusEngine[$keyboard]}
+
+#change uk to gb because only loadkeys command use uk all otherone config use gb like ibus above !!!!
+if [[ $keyboard = "uk" ]]
+then
+    keyboard="gb"
+fi
+
+#asking timezone
+##sudo timedatectl set-timezone America/New_York
+valueok=""
+while [[ -z $valueok ]]
+do
+    echo -n "Enter your Odoo office (for time zone) au, [be], de, du, es, hk, in, ke, mx, ny, sf, br, it, id: "; read tz
+    [[ -z $tz ]] && tz=be
+    valueok=$(echo $tz| grep -E -i -w 'au|be|de|du|es|hk|in|ke|mx|ny|sf|br|it|id')
+done
+declare -A TimeZone
+TimeZone['au']='Australia/Brisbane'
+TimeZone['be']='Europe/Brussels'
+TimeZone['de']='Europe/Berlin'
+TimeZone['du']='Asia/Dubai'
+TimeZone['es']='Europe/Madrid'
+TimeZone['hk']='Asia/Hong_Kong'
+TimeZone['in']='Asia/Kolkata'
+TimeZone['ke']='Africa/Nairobi'
+TimeZone['mx']='Mexico/General'
+TimeZone['ny']='America/New_York'
+TimeZone['sf']='America/Los_Angeles'
+TimeZone['br']='Brazil/East'
+TimeZone['it']='Europe/Rome'
+TimeZone['id']='Asia/Jakarta'
+TZ=${TimeZone[$tz]}
+echo "Selected Time zone : $TZ"
+
+declare -A Locale
+Locale['au']='en_AU.UTF-8'
+Locale['be']='fr_BE.UTF-8'
+Locale['de']='de_DE.UTF-8'
+Locale['du']='en_US.UTF-8'
+Locale['es']='es_ES.UTF-8'
+Locale['hk']='en_HK.UTF-8'
+Locale['in']='en_IN.UTF-8'
+Locale['ke']='en_GB.UTF-8'
+Locale['mx']='es_MX.UTF-8'
+Locale['ny']='en_US.UTF-8'
+Locale['sf']='en_US.UTF-8'
+Locale['br']='pt-BR.UTF-8'
+Locale['it']='it_IT.UTF-8'
+Locale['id']='id_ID.UTF-8'
+LOCALE=${Locale[$tz]}
+PAPER="letter"
+if [[ $tz = "be" || $tz = "es" || $tz = "de" || $tz = "it" ]]
+then
+    PAPER="a4"
+fi
+echo "selected locale : $LOCALE and paper : $PAPER"
+
+# asking odoo user and password
+password_accepted=false
+while ! $password_accepted
+do
+    read -p "Enter your username (gram) for odoo.com: " odoouser
+    odoopass=""
+    while [[ -z $odoopass ]]
+    do
+        odoopass="$(ask 'Enter user password for odoo.com:')"
+    done
+
+    if [[ $networking = "up" ]]
+    then
+        if userexist ${odoouser}@odoo.com ${odoopass} ${odoouser}
+        then
+            password_accepted=true
+        else
+            echo "Error! Bad username and/or password (Perhaps App 2FA has been activated?)"
+        fi
+    else
+        odoopass_confirmation="$(ask 'Verify user password for odoo.com:')"
+        if [[ $odoopass = "$odoopass_confirmation" ]]
+        then
+            password_accepted=true
+        else
+            echo "Error! Passwords don't match"
+        fi
+    fi
+done
+
+#find the free laptop disk
+disk=''
+for d in $(lsblk | grep disk | awk '{print $1}')
+do
+    mounted=$(lsblk | grep $d | grep part | awk ' /\// {print}')
+    if [[ -z $mounted ]]
+    then
+        disk="/dev/$d"
+        break
+    fi
+done
+
+[[ -z $disk ]] && echo "No free disk found for install, exit" && exit 0;
+
+echo "Using disk $disk for install ..."
+
+disktype=$(echo "$disk" | awk '{print substr($0,1,length($0)-1)}')
+case $disktype in
+    /dev/sd | /dev/hd)
+        part1="${disk}1"
+        part2="${disk}2"
+        part3="${disk}3"
+        ;;
+    *)
+        part1="${disk}p1"
+        part2="${disk}p2"
+        part3="${disk}p3"
+        ;;
+esac
+
+echo -n "Hit RETURN to start install, be careful all laptop data will be erased"; read _
+
+echo "Writing 1 MB at the start and the end of the disk..."
+disk_block_size=$(blockdev --getsz $disk)
+dd bs=512 if=/dev/zero of=$disk count=2048 conv=noerror,sync
+dd bs=512 if=/dev/zero of=$disk count=2048 seek=$((disk_block_size - 2048)) conv=noerror,sync
+
+#clean disk and create partition
+
+sgdisk -o \
+    -n 1:0:+1256MB -t 1:EF00 -c 1:efi \
+    -n 2:0:+2148MB -t 2:8300 -c 2:boot \
+    -n 3:0:0       -t 3:8300 -c 3:linux \
+    $disk
+partprobe
+
+echo "Restore partition 1/3 ..."
+dd bs=1M if=/home/odoo/part1.img of=$part1 status=progress
+echo "Restore partition 2/3 ..."
+partclone.ext4 -r -s  /home/odoo/part2.pcl -o $part2
+e2fsck -pf $part2
+resize2fs $part2
+
+#generate a keyfile for crypt partition 32 car long
+openssl rand -base64 32 >/tmp/keyfile
+
+#encrypt the partition
+echo "Creating encrypted partition with a random key ..."
+echo "YES" | cryptsetup luksFormat $part3 --key-file /tmp/keyfile
+echo "YES" | cryptsetup luksUUID --uuid=fb55bbe2-b782-48d2-b7fc-040b847ef260 $part3 --key-file /tmp/keyfile
+
+cryptsetup open $part3 dm_crypt-0 --key-file /tmp/keyfile
+echo "${odoopass}" | cryptsetup luksAddKey $part3 --key-file /tmp/keyfile
+
+#create LVM partition
+pvcreate /dev/mapper/dm_crypt-0
+vgcreate $VGNAME /dev/mapper/dm_crypt-0
+
+lvcreate $VGNAME -L 32G -n swap_1
+lvcreate $VGNAME -l 100%FREE -n root
+
+echo "Restore Odoo system laptop ..."
+partclone.ext4 -r -s  /home/odoo/$VGNAME-root.pcl -o /dev/mapper/$VGNAME-root
+
+resize2fs -p /dev/mapper/$VGNAME-root
+mkswap /dev/$VGNAME/swap_1
+
+echo "System installed, finishing configuration ....."
+mkdir -p /mnt/linux
+mount /dev/mapper/$VGNAME-root /mnt/linux
+mount $part2 /mnt/linux/boot
+mount $part1 /mnt/linux/boot/efi
+mount -t proc /proc /mnt/linux/proc
+mount -t sysfs /sys /mnt/linux/sys
+mount -R /dev /mnt/linux/dev
+
+grub_file=/mnt/linux/etc/default/grub
+finalize_file=/mnt/linux/tmp/finalize.sh
+firstrun_file=/mnt/linux/usr/local/bin/firstrun
+synchroVideo_file=/mnt/linux/usr/local/bin/synchroVideo
+sbin_dir=/mnt/linux/usr/local/sbin
+bin_dir=/mnt/linux/usr/local/bin
+home_user_dir=/mnt/linux/home/odoo
+autostart_dir=$home_user_dir/.config/autostart
+
+
+echo "${odoouser}-laptop" > /mnt/linux/etc/hostname
+rm $home_user_dir/.local/share/keyrings/login.keyring
+rm $home_user_dir/.local/share/keyrings/[dD]efault*
+rm -rf $home_user_dir/.config/rustdesk
+rm -rf /mnt/linux/root/.config/rustdesk
+rm -rf /mnt/linux/root/.anydesk
+rm -rf $home_user_dir/Videos/AnyDesk
+cp /home/odoo/files-to-copy/firstrun $firstrun_file
+sed -i "s/KEYMAP_CHANGE_ME/$keyboard/" $firstrun_file
+sed -i "s/IBUS_CHANGE_ME/$IBUSENGINE/" $firstrun_file
+sed -i "s/LOCALE_CHANGE_ME/$LOCALE/" $firstrun_file
+#change sed delimiter to , because / inside TimeZone
+sed -i "s,TZ_CHANGE_ME,${TZ}," $firstrun_file
+echo "XKBMODEL=\"pc105\"
+XKBLAYOUT=\"$keyboard\"
+XKBVARIANT=\"\"
+XKBOPTIONS=\"\"
+BACKSPACE=\"guess\"" > /mnt/linux/etc/default/keyboard
+
+# Overwrite firstrun.desktop since it's changed upon first login
+cp /home/odoo/files-to-copy/firstrun.desktop $autostart_dir/
+echo "LANG=$LOCALE
+LANGUAGE=en_US:en
+LC_CTYPE=$LOCALE
+LC_NUMERIC=$LOCALE
+LC_TIME=$LOCALE
+LC_COLLATE=$LOCALE
+LC_MONETARY=$LOCALE
+LC_PAPER=$LOCALE
+LC_NAME=$LOCALE
+LC_ADDRESS=$LOCALE
+LC_TELEPHONE=$LOCALE
+LC_MEASUREMENT=$LOCALE
+LC_IDENTIFICATION=$LOCALE
+LC_MESSAGES=en_US.UTF-8" >/mnt/linux/etc/default/locale
+
+echo "LC_NUMERIC    DEFAULT=$LOCALE
+LC_TIME DEFAULT=$LOCALE
+LC_MONETARY DEFAULT=$LOCALE
+LC_PAPER    DEFAULT=$LOCALE
+LC_NAME DEFAULT=$LOCALE
+LC_ADDRESS  DEFAULT=$LOCALE
+LC_TELEPHONE    DEFAULT=$LOCALE
+LC_MEASUREMENT  DEFAULT=$LOCALE
+LC_IDENTIFICATION   DEFAULT=$LOCALE
+PAPERSIZE   DEFAULT=$PAPER" >/mnt/linux/home/odoo/.pam_environment
+
+#remove old files from /usr/local/sbin/ to be sure all will be clean
+rm $sbin_dir/synchroVideo
+rm $sbin_dir/synchroVideo_inotify
+cp /home/odoo/files-to-copy/synchroVideo_inotify $bin_dir/
+cp /home/odoo/files-to-copy/synchroVideo $synchroVideo_file
+chmod +x $bin_dir/synchroVideo_inotify
+chmod +x $synchroVideo_file
+mkdir -p $home_user_dir/.config/systemd/user/default.target.wants
+cp /home/odoo/files-to-copy/synchroVideo_inotify.service $home_user_dir/.config/systemd/user/synchroVideo_inotify.service
+ln -s $home_user_dir/.config/systemd/user/synchroVideo_inotify.service $home_user_dir/.config/systemd/user/default.target.wants/synchroVideo_inotify.service
+# only change the first assignation of CHANGE_ME
+sed -i "0,/EMAIL=\"CHANGE_ME@odoo.com\"/s/CHANGE_ME/${odoouser}/" $synchroVideo_file
+echo "* * * * * /usr/local/bin/synchroVideo" >/mnt/linux/var/spool/cron/crontabs/odoo
+chmod 600 /mnt/linux/var/spool/cron/crontabs/odoo
+
+if [[ $cputype = "AMD" ]]
+then
+    sed -i "s/GRUB_CMDLINE_LINUX=.*$/GRUB_CMDLINE_LINUX=\"amd_iommu=off vt.handoff=7\"/" $grub_file
+else
+    sed -i "s/GRUB_CMDLINE_LINUX=.*$/GRUB_CMDLINE_LINUX=\"vt.handoff=7\"/" $grub_file
+fi
+
+# en chroot : update-initramfs -u -k all et mkinitramfs -o /boot/initrd.img-${kernel_ver}-generic ${kernel_ver}-generic
+echo "export PATH=$PATH:/bin:/sbin:/usr/bin:/usr/sbin" >$finalize_file
+
+# make sure the layout is correct in initramfs
+echo "setupcon --save-only" >>$finalize_file
+echo "echo 'KEYMAP=$console_layout' > /etc/vconsole.conf" >>$finalize_file
+
+echo "usermod --password '$(echo $odoopass | openssl passwd -1 -stdin)' odoo" >>$finalize_file
+echo "rm /etc/localtime" >>$finalize_file
+echo "chown odoo:users /home/odoo/.pam_environment" >>$finalize_file
+echo "ln -s /usr/share/zoneinfo/$TZ /etc/localtime" >>$finalize_file
+echo "chown odoo:crontab /var/spool/cron/crontabs/odoo" >>$finalize_file
+echo "update-initramfs -u -k all" >>$finalize_file
+echo "update-grub" >>$finalize_file
+
+chmod +x $finalize_file
+chroot /mnt/linux /bin/bash -c /tmp/finalize.sh
+
+echo "Configuration completed, closing disk and shutdown ..."
+umount -R /mnt/linux
+vgchange -a n $VGNAME
+cryptsetup close dm_crypt-0
+shutdown -h now

@@ -1,0 +1,27 @@
+#!/bin/bash
+# by moa 2021-07-20
+# replace Discord launcher for testing upgrade Discord
+#
+PATH=$PATH:$PWD
+LANG=C
+new=$(curl "https://discordapp.com/api/download?platform=linux&format=deb" | awk 'match($0, /\/[0-9]+\.[0-9]+\.[0-9]+\//) {print substr($0, RSTART+1, RLENGTH-2) }')
+old=$(dpkg -s discord | grep -i version | awk '{print $2}')
+if [[ $new != $old ]]
+then
+    pwd=$(zenity --entry --hide-text --title="Password in order to upgrade Discord" --text="Please enter the user password for your computer:" 2>/dev/null)
+    [[ -z $pwd ]] && exit 1
+    wget -O /tmp/discord.deb --progress=bar:force:noscroll "https://discordapp.com/api/download?platform=linux&format=deb" 2>&1 | stdbuf -i0 -o0 -e0 tr '>' '\n' | stdbuf -i0 -o0 -e0 sed -rn 's/^.*\<([0-9]+)%\[.*$/\1/p' | zenity --title="Downloading New Discord version..." --progress --auto-close --auto-kill
+    [[ $? != 0 ]] && exit 1
+
+    echo "$pwd" | sudo -S apt install -y /tmp/discord.deb | zenity --title="Installing New Discord version..." --progress --pulsate --auto-close --auto-kill --no-cancel
+    if [[ $? != 0 ]]; then
+	    zenity --title="Wrong password" --text="Wrong password. Please try again." --warning
+	    exit 1
+    fi
+
+    rm /tmp/discord.deb
+    sleep 2 | zenity --title="Installing New Discord version..." --progress --pulsate --auto-close --no-cancel
+fi
+
+/usr/bin/discord &
+exit 0

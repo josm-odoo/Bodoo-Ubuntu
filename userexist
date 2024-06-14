@@ -1,0 +1,94 @@
+#!/usr/bin/python3
+# coding: utf8
+
+# by moa
+# test if a trigram already exist in Odoo DB
+# if found return 0
+# if none found return 1
+# if Bad DB login return 2
+
+import xmlrpc.client
+import sys
+
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+TRI    = "---"
+USER   = ''
+PASS   = ''
+ACTION = ''
+
+if len(sys.argv) > 1 and len(sys.argv) < 6:
+    USER = sys.argv[1]
+    PASS = sys.argv[2]
+    TRI  = sys.argv[3]
+    if len(sys.argv) > 4:
+        ACTION = sys.argv[4]
+else:
+    print("Usage : %s [odoo user] [odoo password] [email] -n" % sys.argv[0])
+    print("-d or -r  not mandatory : is for returning Display name, or Archive partner in place of 1 if found")
+    sys.exit(0)
+
+HOST = 'www.odoo.com'
+PORT = 443
+DB = 'openerp'
+DATABASE_URL = f'https://{HOST}:{PORT}'
+
+common = xmlrpc.client.ServerProxy('{}/xmlrpc/2/common'.format(DATABASE_URL), allow_none=True)
+try:
+    uid = common.authenticate(DB, USER, PASS, {})
+except Exception as e:
+    print(f"{bcolors.FAIL}impossible to connect with Odoo database : {e}{bcolors.ENDC}", file=sys.stderr)
+    sys.exit(126)
+
+# print("Logged in as %s (uid:%d)" % (USER,uid))
+models = xmlrpc.client.ServerProxy('{}/xmlrpc/2/object'.format(DATABASE_URL), allow_none=True)
+res = models.execute_kw(DB, uid, PASS,
+                        'res.users', 'search_read',
+                        [[['login', '=', f'{TRI}@odoo.com']]],
+                        {'context': {'active_test': False}, 'fields': ['partner_id', 'name']})
+if (len(res)) > 0:
+    if ACTION == '-d':
+        print(res[0]['name'])
+        sys.exit(0)
+    elif ACTION == '-r':
+        # archive all partners not linked to an active user
+        mail_group_ids = []
+        for domaine in ('odoo.com', 'openerp.com'):
+            email = "%s@%s" % (TRI, domaine)
+            email_portal = "%s+portal@%s" % (TRI, domaine)
+            res = models.execute_kw(DB, uid, PASS,
+                            'res.partner', 'search_read', [[['email', 'in', [email, email_portal]]]],
+                            {'context': {'active_test': False}, 'fields': ['id', 'name', 'active', 'employee', 'user_ids', 'email']})
+            for data in res:
+                # already user linked to this partners ?
+                if data['user_ids']:
+                    print("%s -> Partner %s linked to an active user, archiving user first ..." % (data['email'], data['name']))
+                    for user_id in data['user_ids']:
+                        models.execute_kw(DB, uid, PASS, 'res.users', 'write', [user_id, {'active': False}])
+                # archive partner
+                print('%s -> Archive partner : %s' % (data['email'], data['name']))
+                models.execute_kw(DB, uid, PASS, 'res.partner', 'write', [[data['id']], {'active': False}])
+                # remove partner from all mailing lists
+                recs = models.execute_kw(DB, uid, PASS,
+                                'mail.group.member', 'search_read', [[['partner_id', '=', data['id']]]],
+                                {'context': {'active_test': False}})
+                for rec in recs:
+                    print(f"{rec['partner_id'][1]} ({rec['email']}) removed from {rec['mail_group_id'][1]} mailing list")
+                    mail_group_ids.append(rec['id'])
+
+        if mail_group_ids:
+            models.execute_kw(DB, uid, PASS, 'mail.group.member', 'unlink', [mail_group_ids])
+    else:
+        sys.exit(0)
+else:
+    sys.exit(1)

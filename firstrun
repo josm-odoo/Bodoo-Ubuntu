@@ -1,0 +1,18 @@
+#!/bin/bash
+#first login session script to change keyboard layout and time zone
+#put it in /usr/local/sbin
+
+PATH=$PATH:$PWD
+KBL=KEYMAP_CHANGE_ME
+
+/usr/bin/setxkbmap $KBL
+/usr/bin/timedatectl set-timezone TZ_CHANGE_ME
+localectl set-keymap $KBL
+localectl set-x11-keymap $KBL
+
+# Uninstall other keyboards on desktop environments
+gsettings set org.gnome.desktop.input-sources mru-sources "[('xkb', '$KBL')]"
+gsettings set org.gnome.desktop.input-sources sources "[('xkb', '$KBL')]"
+gsettings set org.cinnamon.desktop.input-sources sources "[('xkb', '$KBL')]"
+
+sed -i "s/X-GNOME-Autostart-enabled=true/X-GNOME-Autostart-enabled=false/" /home/odoo/.config/autostart/firstrun.desktop

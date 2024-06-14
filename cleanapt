@@ -1,0 +1,45 @@
+#!/bin/bash
+#
+#by moa 2021-03-01
+#auto update and clean laptop packages
+#add this ton root cron lie 20 11 * * * /usr/local/sbin/cleanapt
+#
+export XDG_RUNTIME_DIR=/run/user/1000
+export DISPLAY=:0
+FORCE=0
+
+PATH=$PATH:$PWD
+if [[ $EUID -ne 0 ]]
+  then echo "Please run as root"
+  exit 1
+fi
+
+if [[ $# -gt 0 && $1 = 'force' ]]
+then
+    FORCE=1
+    echo -e 'Force clean ...\n'
+fi
+
+WEEKRUN=0
+FILERUN=~/.cleanapt.lock
+if [[ -f $FILERUN ]]
+then
+    WEEKRUN=$(cat $FILERUN)
+fi
+
+WEEKCUR=$(date +"%U")
+
+if [[ $WEEKRUN -ne $WEEKCUR || $FORCE -eq 1 ]]
+then
+    sudo -u odoo DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /usr/bin/notify-send "Clean up & upgrade system in Progress, don't shutdown !"
+    systemctl --runtime mask poweroff.target
+    # #automatic update expired apt keys, run only with root
+    keys=$(apt update | grep -E 'EXPKEYSIG|NO_PUBKEY' | awk '{for(i=1; i<=NF; i++) if($i~/EXPKEYSIG|NO_PUBKEY/)print $(i+1)}')
+    for key in $keys
+    do
+        apt-key adv --recv-keys --keyserver keyserver.ubuntu.com $key
+    done
+    echo -e '\n' | /usr/bin/apt autoremove --purge -y && /usr/bin/apt clean && echo $WEEKCUR>$FILERUN
+    systemctl unmask poweroff.target
+    sudo -u odoo DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus /usr/bin/notify-send "Clean up & upgrade system Finished !"
+fi
